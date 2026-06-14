@@ -1,0 +1,13 @@
+slprj/
+*.slxc
+*.asv
+*.autosave
+*.tmp
+*.bak
+*.log
+*.aux
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+*.out
+*.toc

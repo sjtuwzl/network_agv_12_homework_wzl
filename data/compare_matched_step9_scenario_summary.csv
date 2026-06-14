@@ -1,0 +1,2 @@
+final_mean_err_independent,final_mean_err_cooperative,decay_independent,decay_cooperative,improve_final_err_pct,improve_decay_pct,min_pair_dist_independent,min_pair_dist_cooperative
+1.19243373384847,1.1052441565388,0.699283135552691,0.648152243094755,7.31190126836443,7.31190126836443,0.272214773735222,0.202153475024733
