@@ -14,6 +14,26 @@ project_root = fileparts(this_dir);
 
 run(fullfile(project_root, 'scripts', 'init_simulink_12agv_workspace.m'));
 
+% Tunable parameters for quick experiments (edit here).
+% These names should match Constant block values in x12_agv.slx.
+params = struct( ...
+    'p', 0.20, ...
+    'd_sel', 2, ...
+    'kc_pos', 0.08, ...
+    'kc_vel', 0.10, ...
+    'enable_coop', 1 ...
+);
+run_all_experiments = true;   % true: also run coop on/off compare + p-d scan
+
+% Push overrides to base workspace so Simulink Constant blocks can resolve them.
+param_names = fieldnames(params);
+for ii = 1:numel(param_names)
+    name_i = param_names{ii};
+    assignin('base', name_i, params.(name_i));
+end
+fprintf('Applied params: p=%.2f, d_sel=%d, kc_pos=%.3f, kc_vel=%.3f, enable_coop=%d\n', ...
+    params.p, params.d_sel, params.kc_pos, params.kc_vel, params.enable_coop);
+
 mdl = fullfile(project_root, 'slimulink', 'x12_agv.slx');
 if ~exist(mdl, 'file')
     error('Model not found: %s', mdl);
@@ -24,6 +44,7 @@ stop_time = 400;
 
 % Run simulation
 open_system(mdl);
+local_apply_model_initial_conditions('x12_agv', 12);
 out = sim('x12_agv', 'StopTime', num2str(stop_time)); %#ok<NASGU>
 
 % Fetch outputs from base workspace (To Workspace blocks)
@@ -132,18 +153,21 @@ pic_dir = fullfile(project_root, 'pic', 'simulink_pic');
 data_dir = fullfile(project_root, 'data');
 if ~exist(pic_dir, 'dir'), mkdir(pic_dir); end
 if ~exist(data_dir, 'dir'), mkdir(data_dir); end
+fig_note = '_加入防碰撞';
 
 figure('Name','Simulink 12-AGV mean position error');
 plot(t, mean_err, 'LineWidth', 1.6);
 grid on; xlabel('t (s)'); ylabel('mean ||e_{pos}||');
 title('Simulink 12-AGV mean position error');
-exportgraphics(gcf, fullfile(pic_dir, 'simulink_12agv_mean_pos_err.png'), 'Resolution', 220);
+fig_mean = fullfile(pic_dir, ['simulink_12agv_mean_pos_err' fig_note '.png']);
+exportgraphics(gcf, fig_mean, 'Resolution', 220);
 
 figure('Name','Simulink 12-AGV per-AGV final error');
 bar(1:12, pos_err(:,end));
 grid on; xlabel('AGV index'); ylabel('final ||e_{pos,i}||');
 title('Final position error per AGV');
-exportgraphics(gcf, fullfile(pic_dir, 'simulink_12agv_final_err_bar.png'), 'Resolution', 220);
+fig_bar = fullfile(pic_dir, ['simulink_12agv_final_err_bar' fig_note '.png']);
+exportgraphics(gcf, fig_bar, 'Resolution', 220);
 
 T = table((1:12).', loss_rate_per_agv.', pos_err(:,end), ...
     'VariableNames', {'agv_id','loss_rate_emp','final_pos_err'});
@@ -153,19 +177,55 @@ writetable(T, csv_file);
 save(fullfile(project_root, 'simulink_12agv_check_results.mat'), ...
     't','xv','uv','gv','pos_err','mean_err','loss_rate_per_agv','loss_rate_global','stop_time');
 
-fprintf('Saved figure: %s\n', fullfile(pic_dir, 'simulink_12agv_mean_pos_err.png'));
-fprintf('Saved figure: %s\n', fullfile(pic_dir, 'simulink_12agv_final_err_bar.png'));
+fprintf('Saved figure: %s\n', fig_mean);
+fprintf('Saved figure: %s\n', fig_bar);
 fprintf('Saved CSV   : %s\n', csv_file);
+
+if run_all_experiments
+    fprintf('\n=== Extended experiments ===\n');
+    fprintf('1) Running matched coop off/on comparison ...\n');
+
+    rec_off = local_run_one_case(mdl, stop_time, params.p, params.d_sel, params.kc_pos, params.kc_vel, 0, ref_stack);
+    rec_on  = local_run_one_case(mdl, stop_time, params.p, params.d_sel, params.kc_pos, params.kc_vel, 1, ref_stack);
+
+    figure('Name','Simulink 12-AGV matched coop compare');
+    plot(rec_off.t, rec_off.mean_err, 'LineWidth', 1.6, 'DisplayName', 'enable\_coop=0');
+    hold on;
+    plot(rec_on.t,  rec_on.mean_err,  'LineWidth', 1.6, 'DisplayName', 'enable\_coop=1');
+    grid on; xlabel('t (s)'); ylabel('mean ||e_{pos}||');
+    legend('Location', 'northeast');
+    title(sprintf('12-AGV matched coop compare (p=%.2f, d=%d)', params.p, params.d_sel));
+    fig_cmp = fullfile(pic_dir, ['simulink_12agv_matched_coop_compare' fig_note '.png']);
+    exportgraphics(gcf, fig_cmp, 'Resolution', 220);
+
+    Tcmp = table( ...
+        [0;1], ...
+        [rec_off.final_mean_err; rec_on.final_mean_err], ...
+        [rec_off.decay_ratio; rec_on.decay_ratio], ...
+        [rec_off.loss_rate_global; rec_on.loss_rate_global], ...
+        [rec_off.min_pair_dist; rec_on.min_pair_dist], ...
+        'VariableNames', {'enable_coop','final_mean_err','decay_ratio','loss_rate_emp','min_pair_dist'});
+    cmp_csv = fullfile(data_dir, 'simulink_12agv_matched_coop_compare.csv');
+    writetable(Tcmp, cmp_csv);
+    fprintf('Saved compare figure: %s\n', fig_cmp);
+    fprintf('Saved compare CSV   : %s\n', cmp_csv);
+
+    fprintf('2) Running full p-d scan script ...\n');
+    run(fullfile(project_root, 'scripts', 'run_simulink_12agv_pd_scan.m'));
+    fprintf('Extended experiments done.\n');
+end
 
 function [t, v] = local_extract_ts(obj)
     if isa(obj, 'timeseries')
         t = obj.Time;
         v = obj.Data;
+        v = local_normalize_ts_data(v, numel(t));
         return;
     end
     if isstruct(obj) && isfield(obj, 'time') && isfield(obj, 'signals')
         t = obj.time;
         v = obj.signals.values;
+        v = local_normalize_ts_data(v, numel(t));
         return;
     end
     if isobject(obj) && isprop(obj, 'Values')
@@ -173,10 +233,44 @@ function [t, v] = local_extract_ts(obj)
         if isa(vals, 'timeseries')
             t = vals.Time;
             v = vals.Data;
+            v = local_normalize_ts_data(v, numel(t));
             return;
         end
     end
     error('Unsupported signal type: %s', class(obj));
+end
+
+function v = local_normalize_ts_data(v, n_t)
+    % Normalize signal data to [N x dim], where N = number of timestamps.
+    if isa(v, 'embedded.fi')
+        v = double(v);
+    end
+
+    if isempty(v)
+        return;
+    end
+
+    sz = size(v);
+    if isvector(v)
+        v = v(:);
+        return;
+    end
+
+    % Common timeseries case from vector signals: [dim x 1 x N]
+    if ndims(v) >= 3
+        if sz(end) == n_t
+            v = reshape(v, [], n_t).';
+            return;
+        elseif sz(1) == n_t
+            v = reshape(v, n_t, []);
+            return;
+        end
+    end
+
+    % 2-D fallback: transpose if time axis is the second dimension.
+    if size(v,1) ~= n_t && size(v,2) == n_t
+        v = v.';
+    end
 end
 
 function name = local_pick_var(base_vars, candidates)
@@ -232,6 +326,114 @@ function [x_name, u_name, g_name] = local_autodetect_outsimout_in_simout(out_obj
             end
         catch
             % ignore
+        end
+    end
+end
+
+function rec = local_run_one_case(mdl, stop_time, p, d_sel, kc_pos, kc_vel, enable_coop, ref_stack)
+    assignin('base', 'p', p);
+    assignin('base', 'd_sel', int32(d_sel));
+    assignin('base', 'kc_pos', kc_pos);
+    assignin('base', 'kc_vel', kc_vel);
+    assignin('base', 'enable_coop', enable_coop);
+
+    local_apply_model_initial_conditions(mdl, 12);
+    out = sim(mdl, 'StopTime', num2str(stop_time));
+    [x_obj, u_obj, g_obj] = local_pick_outputs_from_simout(out);
+
+    [t, xv] = local_extract_ts(x_obj);
+    [~, uv] = local_extract_ts(u_obj);
+    [~, gv] = local_extract_ts(g_obj);
+
+    steps = size(xv, 1);
+    pos_err = zeros(12, steps);
+    for k = 1:12
+        cols = (k-1)*4 + (1:4);
+        ei = xv(:, cols) - ref_stack(cols).';
+        pos_err(k, :) = sqrt(ei(:,1).^2 + ei(:,2).^2).';
+    end
+    mean_err = mean(pos_err, 1);
+
+    rec = struct();
+    rec.t = t;
+    rec.mean_err = mean_err;
+    rec.final_mean_err = mean_err(end);
+    rec.decay_ratio = mean_err(end) / max(mean_err(1), 1e-12);
+    loss_rate_per_agv = 1 - mean(gv, 1);
+    rec.loss_rate_global = mean(loss_rate_per_agv);
+    rec.min_pair_dist = local_min_pair_distance(xv);
+end
+
+function [x_obj, u_obj, g_obj] = local_pick_outputs_from_simout(out_obj)
+    names = out_obj.who;
+    x_name = local_pick_var(names, {'x_all','x_sim','x1_sim'});
+    u_name = local_pick_var(names, {'ua_all','ua_sim','ua1_sim'});
+    g_name = local_pick_var(names, {'gamma_all','gamma_sim','gamma1_sim'});
+
+    if isempty(x_name) || isempty(u_name) || isempty(g_name)
+        [x2, u2, g2] = local_pick_outsimout_by_width(out_obj);
+        if ~isempty(x2), x_name = x2; end
+        if ~isempty(u2), u_name = u2; end
+        if ~isempty(g2), g_name = g2; end
+    end
+
+    if isempty(x_name) || isempty(u_name) || isempty(g_name)
+        error('Cannot identify x/ua/gamma outputs from SimulationOutput.');
+    end
+
+    x_obj = out_obj.get(x_name);
+    u_obj = out_obj.get(u_name);
+    g_obj = out_obj.get(g_name);
+end
+
+function [x_name, u_name, g_name] = local_pick_outsimout_by_width(out_obj)
+    x_name = ''; u_name = ''; g_name = '';
+    names = out_obj.who;
+    mask = startsWith(names, 'outsimout');
+    names = names(mask);
+    for i = 1:numel(names)
+        n = names{i};
+        obj = out_obj.get(n);
+        [~, v] = local_extract_ts(obj);
+        w = size(v,2);
+        if w == 48 && isempty(x_name), x_name = n; end
+        if w == 24 && isempty(u_name), u_name = n; end
+        if w == 12 && isempty(g_name), g_name = n; end
+    end
+end
+
+function dmin = local_min_pair_distance(xv)
+    steps = size(xv,1);
+    dmin = inf;
+    for k = 1:steps
+        pos = zeros(12,2);
+        for i = 1:12
+            cols = (i-1)*4 + (1:2);
+            pos(i,:) = xv(k, cols);
+        end
+        for i = 1:11
+            for j = i+1:12
+                dij = norm(pos(i,:) - pos(j,:));
+                if dij < dmin
+                    dmin = dij;
+                end
+            end
+        end
+    end
+end
+
+function local_apply_model_initial_conditions(mdl_name_or_path, N)
+    [~, mdl_name, ext] = fileparts(mdl_name_or_path);
+    if isempty(ext)
+        mdl_name = mdl_name_or_path;
+    end
+    for i = 1:N
+        blk = sprintf('%s/agv_%d/plant', mdl_name, i);
+        try
+            % Force each AGV plant to use its own initial condition variable.
+            set_param(blk, 'X0', sprintf('x0_%d', i));
+        catch
+            warning('Cannot set initial condition for block: %s', blk);
         end
     end
 end

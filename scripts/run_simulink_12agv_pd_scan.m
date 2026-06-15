@@ -20,6 +20,8 @@ mdl = fullfile(project_root, 'slimulink', 'x12_agv.slx');
 if ~exist(mdl, 'file')
     error('Model not found: %s', mdl);
 end
+open_system(mdl);
+local_apply_model_initial_conditions('x12_agv', 12);
 
 % Scan set
 p_list = [0.05, 0.20, 0.35];
@@ -49,6 +51,7 @@ for ip = 1:numel(p_list)
         p = p_list(ip); %#ok<NASGU>
         d_sel = int32(d_list(id)); %#ok<NASGU>
 
+        local_apply_model_initial_conditions('x12_agv', 12);
         out = sim(mdl, 'StopTime', num2str(stop_time));
         [x_obj, u_obj, g_obj] = local_pick_outputs(out);
 
@@ -103,6 +106,7 @@ data_dir = fullfile(project_root, 'data');
 pic_dir = fullfile(project_root, 'pic', 'simulink_pic');
 if ~exist(data_dir, 'dir'), mkdir(data_dir); end
 if ~exist(pic_dir, 'dir'), mkdir(pic_dir); end
+fig_note = '_加入防碰撞';
 
 csv_file = fullfile(data_dir, 'simulink_12agv_pd_scan_summary.csv');
 writetable(T, csv_file);
@@ -128,7 +132,7 @@ xlabel('delay d (samples)');
 ylabel('packet loss p');
 title('12-AGV decay ratio over (p,d)');
 colorbar;
-exportgraphics(gcf, fullfile(pic_dir, 'simulink_12agv_pd_heatmap_decay.png'), 'Resolution', 220);
+exportgraphics(gcf, fullfile(pic_dir, ['simulink_12agv_pd_heatmap_decay' fig_note '.png']), 'Resolution', 220);
 
 figure('Name','12AGV p-d heatmap final mean err');
 imagesc(d_list, p_list, grid_final);
@@ -137,7 +141,7 @@ xlabel('delay d (samples)');
 ylabel('packet loss p');
 title('12-AGV final mean position error over (p,d)');
 colorbar;
-exportgraphics(gcf, fullfile(pic_dir, 'simulink_12agv_pd_heatmap_final_mean_err.png'), 'Resolution', 220);
+exportgraphics(gcf, fullfile(pic_dir, ['simulink_12agv_pd_heatmap_final_mean_err' fig_note '.png']), 'Resolution', 220);
 
 % Representative time-series curves (AGV1 state/control)
 if ~isempty(fieldnames(rec_rep))
@@ -155,7 +159,7 @@ if ~isempty(fieldnames(rec_rep))
     xlabel('t (s)'); ylabel('state value');
     legend('p_x(AGV1)','p_y(AGV1)','v_x(AGV1)','v_y(AGV1)', 'Location', 'northeast');
     title(sprintf('12-AGV state curves (%s)', strrep(tag, '_', ', ')));
-    exportgraphics(gcf, fullfile(pic_dir, ['simulink_12agv_state_curve_' tag '.png']), 'Resolution', 220);
+    exportgraphics(gcf, fullfile(pic_dir, ['simulink_12agv_state_curve_' tag fig_note '.png']), 'Resolution', 220);
 
     figure('Name','12AGV representative control curves');
     plot(t, uv(:,1), t, uv(:,2), 'LineWidth', 1.2);
@@ -163,14 +167,14 @@ if ~isempty(fieldnames(rec_rep))
     xlabel('t (s)'); ylabel('u_a');
     legend('u_x(AGV1)','u_y(AGV1)', 'Location', 'northeast');
     title(sprintf('12-AGV control output curves (%s)', strrep(tag, '_', ', ')));
-    exportgraphics(gcf, fullfile(pic_dir, ['simulink_12agv_control_curve_' tag '.png']), 'Resolution', 220);
+    exportgraphics(gcf, fullfile(pic_dir, ['simulink_12agv_control_curve_' tag fig_note '.png']), 'Resolution', 220);
 
     figure('Name','12AGV representative mean error curve');
     plot(t, mean_err, 'LineWidth', 1.6);
     grid on;
     xlabel('t (s)'); ylabel('mean ||e_{pos}||');
     title(sprintf('12-AGV mean position error curve (%s)', strrep(tag, '_', ', ')));
-    exportgraphics(gcf, fullfile(pic_dir, ['simulink_12agv_mean_err_curve_' tag '.png']), 'Resolution', 220);
+    exportgraphics(gcf, fullfile(pic_dir, ['simulink_12agv_mean_err_curve_' tag fig_note '.png']), 'Resolution', 220);
 end
 
 fprintf('Saved CSV: %s\n', csv_file);
@@ -231,11 +235,13 @@ function [t, v] = local_extract_ts(obj)
     if isa(obj, 'timeseries')
         t = obj.Time;
         v = obj.Data;
+        v = local_normalize_ts_data(v, numel(t));
         return;
     end
     if isstruct(obj) && isfield(obj, 'time') && isfield(obj, 'signals')
         t = obj.time;
         v = obj.signals.values;
+        v = local_normalize_ts_data(v, numel(t));
         return;
     end
     if isobject(obj) && isprop(obj, 'Values')
@@ -243,10 +249,40 @@ function [t, v] = local_extract_ts(obj)
         if isa(vals, 'timeseries')
             t = vals.Time;
             v = vals.Data;
+            v = local_normalize_ts_data(v, numel(t));
             return;
         end
     end
     error('Unsupported signal type: %s', class(obj));
+end
+
+function v = local_normalize_ts_data(v, n_t)
+    if isa(v, 'embedded.fi')
+        v = double(v);
+    end
+    if isempty(v)
+        return;
+    end
+
+    sz = size(v);
+    if isvector(v)
+        v = v(:);
+        return;
+    end
+
+    if ndims(v) >= 3
+        if sz(end) == n_t
+            v = reshape(v, [], n_t).';
+            return;
+        elseif sz(1) == n_t
+            v = reshape(v, n_t, []);
+            return;
+        end
+    end
+
+    if size(v,1) ~= n_t && size(v,2) == n_t
+        v = v.';
+    end
 end
 
 function dmin = local_min_pair_distance(xv)
@@ -266,6 +302,17 @@ function dmin = local_min_pair_distance(xv)
                     dmin = dij;
                 end
             end
+        end
+    end
+end
+
+function local_apply_model_initial_conditions(mdl_name, N)
+    for i = 1:N
+        blk = sprintf('%s/agv_%d/plant', mdl_name, i);
+        try
+            set_param(blk, 'X0', sprintf('x0_%d', i));
+        catch
+            warning('Cannot set initial condition for block: %s', blk);
         end
     end
 end

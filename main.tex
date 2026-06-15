@@ -79,6 +79,15 @@ z_i(k+1)=A_{\sigma(k)}z_i(k),\quad \sigma(k)\in\{\text{succ},\text{loss}\},
 \]
 其中两模式矩阵分别对应$\gamma_i(k)=1$与$\gamma_i(k)=0$。
 
+\subsubsection*{(f) 系统建模假设}
+为保证模型可复现且与课程任务规模匹配，本文在建模时采用以下工程假设，并在实验章节中保持一致：
+\begin{itemize}
+    \item \textbf{定位系统假设}：采用理想定位层，控制器可直接获取AGV绝对状态与邻居相对状态；传感器噪声、漂移和遮挡误差暂不单独建模。
+    \item \textbf{通信系统假设}：WiFi/5G链路统一抽象为“伯努利丢包 + 固定时延 + 执行端保持（hold-last）”；当前阶段不区分两种制式的物理层细节，仅通过参数$p,d$表征网络退化程度。
+    \item \textbf{车间空间假设}：采用二维平面作业区，工位与初始点可配置；尚未引入完整几何地图、障碍区块及地图级碰撞约束。
+\end{itemize}
+上述假设使模型能够聚焦于“网络诱导因素对协同控制稳定性与精度的影响”，同时为后续扩展到更细粒度场景（如传感器误差建模、网络制式差异化、车间地图约束）预留接口。
+
 \subsection{2) 稳定性分析（MSS条件与参数影响）}
 \subsubsection*{(a) MSS判据}
 选取二次Lyapunov函数
@@ -361,6 +370,22 @@ u_i=u_{i,\text{local}}+u_{i,\text{coop}}+u_{i,\text{rep}},
 
 本节要解决的问题包括三类：第一，12AGV系统在给定网络条件下是否可收敛；第二，协同策略相对独立控制是否有增益，且该增益是否在公平对比下仍成立；第三，不同$p,d$工况下系统级性能是否可解释、可量化。评价指标采用：\texttt{final\_mean\_err}、\texttt{decay\_ratio}、\texttt{control\_rms}、\texttt{settle\_time\_50pct}、\texttt{min\_pair\_dist}、\texttt{loss\_rate\_emp}。其中前四项衡量收敛与控制代价，\texttt{min\_pair\_dist}衡量安全性，\texttt{loss\_rate\_emp}用于验证通信仿真与参数设定的一致性。
 
+\subsection{加入通信后的协同控制实验（Simulink更新）}
+在完成 \texttt{x12\_agv.slx} 的协同输入端口改造后，本文新增“带通信协同”实验：在每台AGV子系统中显式接入$u_{\text{coop}}$通道，并在顶层按“3组$\times$4车”的环形邻接关系构造组内信息交互。通信层仍采用丢包+固定时延模型，实验参数取
+\[
+p=0.20,\ d=2,\ kc\_pos=0.08,\ kc\_vel=0.10,\ enable\_coop=1.
+\]
+对应一次400s仿真结果显示：$x_{\text{all}},u_{a,\text{all}},\gamma_{\text{all}}$输出维度分别为$8001\times48,8001\times24,8001\times12$，说明通信与协同链路均已正确接入；系统均值位置误差由初值约$1.6391$下降到末值约$0.2363$，衰减比约$0.1441$，经验丢包率约$0.1984$，与设定参数一致。
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.92\textwidth]{simulink_pic/12agv仿真图——加入通信.png}
+    \caption{12AGV带通信协同拓扑图：在原并行结构基础上新增组内协同信息通道，用于验证“通信网络+协同控制”联合闭环已在Simulink模型中落地。}
+    \label{fig:sim12_comm_topology}
+\end{figure}
+
+该实验小节的作用是把“理论控制律中的协同项”与“模型中的通信信号线”一一对应：不仅给出数值收敛证据，也给出结构实现证据。后续公平对比与$p$-$d$扫描均在该通信协同模型基础上开展。
+
 \subsection{基础12AGV曲线与协同曲线对比}
 先看基础并行模型（不含显式协同与避碰增强）的时域结果。图\ref{fig:multi12_all_err_basic}给出了各车误差曲线，图\ref{fig:multi12_mean_err_basic}给出了系统均值误差。两图共同表明：12台AGV并行闭环可运行，且总体误差随时间下降。这一结果回答了“多车系统是否能在网络扰动下保持基本收敛”的问题。
 
@@ -491,8 +516,34 @@ u_i=u_{i,\text{local}}+u_{i,\text{coop}}+u_{i,\text{rep}},
     \label{fig:sim12_mean_curve}
 \end{figure}
 
+\subsection{防碰撞约束实验（加入通信后）}
+在加入通信协同后，本文进一步对“显式防碰撞约束”进行了补充实验。控制律采用
+\[
+u_i=u_{i,\text{local}}+u_{i,\text{coop}}+u_{i,\text{rep}},
+\]
+其中$u_{i,\text{rep}}$由最小距离触发斥力项给出，并通过输入限幅保证控制平滑。为了和工程实现一致，当前阶段防碰撞约束按组内关系构建，跨组避碰不作为本阶段硬约束目标。硬验收阈值设置为
+\[
+d_{\min}(t)\ge d_{\text{safe\_min}}=0.20\text{ m}.
+\]
+
+基于 \texttt{scripts/run\_simulink\_12agv\_collision\_diagnose.m} 的诊断结果，代表工况
+$(p=0.20,d=2)$ 下全局最小车距为
+\[
+\min_t d_{\min}(t)=0.013757\text{ m},
+\]
+发生在约$43.1$s（AGV1-AGV7）。相较于未加防碰撞时的近零碰撞距离，指标已有明显改善，但仍未达到$0.20$m硬阈值，因此该版本的安全性结论应标注为“改进但未达标”。
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.85\textwidth]{simulink_pic/simulink_12agv_min_pair_dist_diagnose_加入防碰撞.png}
+    \caption{12AGV最小车距时域曲线（加入防碰撞）：红虚线为安全阈值$0.20$m，蓝线为实际最小车距。该图用于直接判定防碰撞硬约束是否满足。}
+    \label{fig:sim12_min_pair_dist_diagnose}
+\end{figure}
+
+上述结果说明：加入斥力项后，系统碰撞风险得到抑制，但若要满足“全程不碰撞”的严格要求，还需继续提升约束强度或补充跨组安全机制。本文在结论中据实给出这一边界条件，避免将“性能改善”误判为“安全达标”。
+
 \subsection{12AGV章节结论}
-本节实验说明：在12AGV网络化控制场景中，系统能够在存在丢包与固定时延时保持稳定收敛；通过同场景公平对比可确认协同控制对误差指标有正向改善；通过Simulink多工况扫描可确认性能对$p,d$变化的趋势与脚本分析一致。需要额外指出的是，\texttt{simulink\_12agv\_pd\_scan\_summary.csv}中的\texttt{min\_pair\_dist}在当前并行模型下出现0，表明若不显式加入避碰约束，仍可能出现轨迹重合风险。因此工程实现中必须保留并校准安全项（斥力/最小距离约束），这也是协同控制从“可收敛”走向“可部署”的关键差异。
+本节实验说明：在12AGV网络化控制场景中，系统能够在存在丢包与固定时延时保持稳定收敛；通过同场景公平对比可确认协同控制对误差指标有正向改善；通过Simulink多工况扫描可确认性能对$p,d$变化的趋势与脚本分析一致。补充防碰撞实验后，最小车距指标较早期版本明显改善，但在当前“组内约束、跨组不显式约束”的实现下，仍未满足$d_{\min}(t)\ge0.20$m的全局硬阈值。该结果为后续安全增强（更强斥力、跨组约束或时空调度）提供了明确改进方向。
 
 \section{结论}
 \begin{itemize}
