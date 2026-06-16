@@ -3,9 +3,7 @@
 % Tune cooperative + repulsion parameters on the matched Step9 scenario.
 % Goal: satisfy safety (min pair distance >= threshold) while keeping
 % cooperative tracking improvement.
-%
-% coop_use_delay: if true, cooperative/repulsion use delayed states
-%                 (realistic); if false, use current states (idealized).
+% Always uses delayed neighbor states (realistic).
 
 clear; clc;
 this_file = mfilename('fullpath');
@@ -36,10 +34,6 @@ m = single.nu;
 
 x0 = S9.x(:,1);
 x_ref = S9.x_ref;
-
-% ===== Toggle: whether cooperative/repulsion use delayed states =====
-coop_use_delay = true;  % true = realistic (neighbors also delayed); false = idealized
-% ===================================================================
 
 % Group topology assumption: 3 groups x 4 AGVs
 if mod(N,4) ~= 0
@@ -97,7 +91,7 @@ for a = 1:numel(kc_pos_list)
 
                     [final_coop, decay_coop, min_dist_coop] = simulate_coop( ...
                         single, K, d, x0, x_ref, gamma, neighbors, ...
-                        kc_pos, kc_vel, d_safe, k_rep, u_max, coop_use_delay);
+                        kc_pos, kc_vel, d_safe, k_rep, u_max);
 
                     improve_final = (final_ind - final_coop) / max(final_ind, 1e-12) * 100;
                     improve_decay = (decay_ind - decay_coop) / max(decay_ind, 1e-12) * 100;
@@ -127,19 +121,9 @@ data_dir = fullfile(project_root, 'data');
 if ~exist(data_dir, 'dir')
     mkdir(data_dir);
 end
-if coop_use_delay
-    delay_tag = '_delayed';
-else
-    delay_tag = '_ideal';
-end
-csv_file = fullfile(data_dir, ['step11_tune_coop_safety_results', delay_tag, '.csv']);
+csv_file = fullfile(data_dir, 'step11_tune_coop_safety_results.csv');
 writetable(T, csv_file);
 
-if coop_use_delay
-    fprintf('coop_use_delay = 1 (realistic delayed)\n');
-else
-    fprintf('coop_use_delay = 0 (idealized)\n');
-end
 fprintf('Saved tuning table to: %s\n', csv_file);
 
 % Print top candidates
@@ -222,7 +206,7 @@ function [final_mean, decay_ratio, min_pair_dist] = simulate_independent(single,
     min_pair_dist = min(min_pair);
 end
 
-function [final_mean, decay_ratio, min_pair_dist] = simulate_coop(single, K, d, x0, x_ref, gamma, neighbors, kc_pos, kc_vel, d_safe, k_rep, u_max, coop_use_delay)
+function [final_mean, decay_ratio, min_pair_dist] = simulate_coop(single, K, d, x0, x_ref, gamma, neighbors, kc_pos, kc_vel, d_safe, k_rep, u_max)
     n = single.n;
     m = single.nu;
     N = size(gamma, 1);
@@ -258,7 +242,7 @@ function [final_mean, decay_ratio, min_pair_dist] = simulate_coop(single, K, d, 
             x_ref_i = x_ref(ix);
             u_local = K * (x_del - x_ref_i);
 
-            % cooperative term: self=current, neighbors=delayed
+            % cooperative term: self=current, neighbors=delayed (realistic)
             p_i = x(ix(1:2),k);
             v_i = x(ix(3:4),k);
             p_ref_i = x_ref_i(1:2);
@@ -268,19 +252,14 @@ function [final_mean, decay_ratio, min_pair_dist] = simulate_coop(single, K, d, 
             for jj = 1:numel(nei)
                 j = nei(jj);
                 jx = (j-1)*n + (1:n);
-                if coop_use_delay
-                    idx_nb_delay = k - d;
-                    if idx_nb_delay < 1
-                        x_nb_del = xhist(jx,1);
-                    else
-                        x_nb_del = xhist(jx,idx_nb_delay);
-                    end
-                    p_j = x_nb_del(1:2);
-                    v_j = x_nb_del(3:4);
+                idx_nb_delay = k - d;
+                if idx_nb_delay < 1
+                    x_nb_del = xhist(jx,1);
                 else
-                    p_j = x(jx(1:2),k);
-                    v_j = x(jx(3:4),k);
+                    x_nb_del = xhist(jx,idx_nb_delay);
                 end
+                p_j = x_nb_del(1:2);
+                v_j = x_nb_del(3:4);
                 p_ref_j = x_ref(jx(1:2));
                 e_rel_p = (p_i - p_j) - (p_ref_i - p_ref_j);
                 e_rel_v = (v_i - v_j);

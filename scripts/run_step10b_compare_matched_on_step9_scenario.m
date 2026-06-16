@@ -2,10 +2,7 @@
 % Step 10B:
 % Fair comparison on the SAME scenario (initial state, reference, packet sequence):
 % - baseline: independent local delayed feedback (Step6-style)
-% - coop_ideal: local + cooperative(repulsion) with CURRENT states (idealized)
-% - coop_delay: local + cooperative(repulsion) with DELAYED states (realistic)
-%
-% coop_use_delay: toggles which cooperative mode to simulate.
+% - cooperative: local + cooperative + repulsion with delayed neighbors (realistic)
 
 clear; clc;
 this_file = mfilename('fullpath');
@@ -37,11 +34,7 @@ m = single.nu;
 x0 = S9.x(:,1);
 x_ref = S9.x_ref;
 
-% ===== Toggle: cooperative mode =====
-coop_use_delay = false;  % true = realistic (delayed neighbors); false = idealized (current neighbors)
-% ====================================
-
-% Cooperative parameters
+% Cooperative parameters (always delayed, realistic)
 if isfield(S9, 'kc_pos'); kc_pos = S9.kc_pos; else; kc_pos = 0.10; end
 if isfield(S9, 'kc_vel'); kc_vel = S9.kc_vel; else; kc_vel = 0.35; end
 if isfield(S9, 'd_safe'); d_safe = S9.d_safe; else; d_safe = 0.30; end
@@ -147,15 +140,9 @@ for k = 1:steps
         x_ref_i = x_ref(ix);
         u_local = K * (x_del - x_ref_i);
 
-        if coop_use_delay
-            % realistic: self uses current state, neighbors use delayed
-            p_i = x_coop(ix(1:2),k);
-            v_i = x_coop(ix(3:4),k);
-        else
-            % idealized: both self and neighbors use current states
-            p_i = x_coop(ix(1:2),k);
-            v_i = x_coop(ix(3:4),k);
-        end
+        % self uses current state
+        p_i = x_coop(ix(1:2),k);
+        v_i = x_coop(ix(3:4),k);
         p_ref_i = x_ref_i(1:2);
 
         u_coop = zeros(2,1);
@@ -163,19 +150,15 @@ for k = 1:steps
         for jj = 1:numel(nei)
             j = nei(jj);
             jx = (j-1)*n + (1:n);
-            if coop_use_delay
-                idx_nb_delay = k - d;
-                if idx_nb_delay < 1
-                    x_nb_del = xhist_coop(jx,1);
-                else
-                    x_nb_del = xhist_coop(jx,idx_nb_delay);
-                end
-                p_j = x_nb_del(1:2);
-                v_j = x_nb_del(3:4);
+            % neighbor info comes from network (delayed)
+            idx_nb_delay = k - d;
+            if idx_nb_delay < 1
+                x_nb_del = xhist_coop(jx,1);
             else
-                p_j = x_coop(jx(1:2),k);
-                v_j = x_coop(jx(3:4),k);
+                x_nb_del = xhist_coop(jx,idx_nb_delay);
             end
+            p_j = x_nb_del(1:2);
+            v_j = x_nb_del(3:4);
             p_ref_j = x_ref(jx(1:2));
             e_rel_p = (p_i - p_j) - (p_ref_i - p_ref_j);
             e_rel_v = (v_i - v_j);
@@ -230,14 +213,6 @@ decay_coop = final_coop / max(mean_coop(1), 1e-12);
 improve_final_pct = (final_base - final_coop) / max(final_base, 1e-12) * 100;
 improve_decay_pct = (decay_base - decay_coop) / max(decay_base, 1e-12) * 100;
 
-if coop_use_delay
-    delay_tag = '_delayed';
-    coop_label = 'Coop(delayed)';
-else
-    delay_tag = '_ideal';
-    coop_label = 'Coop(ideal)';
-end
-
 pic_dir = fullfile(project_root, 'pic');
 data_dir = fullfile(project_root, 'data');
 if ~exist(pic_dir, 'dir'); mkdir(pic_dir); end
@@ -248,19 +223,9 @@ plot(t, mean_base, 'LineWidth', 1.7); hold on;
 plot(t, mean_coop, 'LineWidth', 1.7);
 grid on;
 xlabel('t (s)'); ylabel('mean ||e_{pos}||');
-legend('Independent', coop_label, 'Location', 'northeast');
-title(sprintf('Matched comparison, coop %s', delay_tag(2:end)));
-exportgraphics(gcf, fullfile(pic_dir, ['compare_matched_step9_scenario_mean_err', delay_tag, '.png']), 'Resolution', 220);
-
-figure('Name','Matched compare min pair distance');
-plot(t, min_dist_base, 'LineWidth', 1.5); hold on;
-plot(t, min_dist_coop, 'LineWidth', 1.5);
-yline(0.20, '--r', '0.20m safety threshold');
-grid on;
-xlabel('t (s)'); ylabel('minimum pairwise distance');
-legend('Independent', coop_label, 'Location', 'best');
-title(sprintf('Safety comparison, coop %s', delay_tag(2:end)));
-exportgraphics(gcf, fullfile(pic_dir, ['compare_matched_step9_scenario_min_dist', delay_tag, '.png']), 'Resolution', 220);
+legend('Independent', 'Cooperative(delayed)', 'Location', 'northeast');
+title(sprintf('Matched comparison, p=%.2f, d=%d', p, d));
+exportgraphics(gcf, fullfile(pic_dir, 'compare_matched_step9_scenario_mean_err.png'), 'Resolution', 220);
 
 summary = table(final_base, final_coop, decay_base, decay_coop, improve_final_pct, improve_decay_pct, ...
     min(min_dist_base), min(min_dist_coop), ...
@@ -268,16 +233,10 @@ summary = table(final_base, final_coop, decay_base, decay_coop, improve_final_pc
     'decay_independent','decay_cooperative','improve_final_err_pct','improve_decay_pct', ...
     'min_pair_dist_independent','min_pair_dist_cooperative'});
 
-csv_file = fullfile(data_dir, ['compare_matched_step9_scenario_summary', delay_tag, '.csv']);
+csv_file = fullfile(data_dir, 'compare_matched_step9_scenario_summary.csv');
 writetable(summary, csv_file);
 
-if coop_use_delay
-    fprintf('coop_use_delay = 1 (realistic delayed)\n');
-else
-    fprintf('coop_use_delay = 0 (idealized)\n');
-end
-fprintf('Saved matched compare figure(mean error): %s\n', fullfile(pic_dir, ['compare_matched_step9_scenario_mean_err', delay_tag, '.png']));
-fprintf('Saved matched compare figure(min dist): %s\n', fullfile(pic_dir, ['compare_matched_step9_scenario_min_dist', delay_tag, '.png']));
+fprintf('Saved matched compare figure(mean error): %s\n', fullfile(pic_dir, 'compare_matched_step9_scenario_mean_err.png'));
 fprintf('Saved matched compare summary: %s\n\n', csv_file);
 disp(summary);
 

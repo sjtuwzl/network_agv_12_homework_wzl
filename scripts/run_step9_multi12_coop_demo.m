@@ -4,12 +4,7 @@
 % - local delayed-state feedback from MSS gain K
 % - intra-group consensus/formation correction
 % - packet loss + fixed delay with hold-last actuation
-%
-% coop_use_delay: if true, cooperative/repulsion terms use delayed states
-%                 (realistic: neighbors info also has network delay);
-%                 if false, cooperative/repulsion use current states
-%                 (idealized: perfect neighbor observation).
-%                 Set coop_use_delay=true for realistic simulation.
+% - neighbor info via network (delayed, realistic)
 
 clear; clc;
 this_file = mfilename('fullpath');
@@ -32,12 +27,8 @@ Ts = S.Ts;
 N = S.N;
 single = S.single;
 K = S.sol.K_delay_state; % 2x4
-p = S.p;
+p = 0.10;     % packet loss probability
 d = S.d;
-
-% ===== Toggle: whether cooperative/repulsion use delayed states =====
-coop_use_delay = false;  % true = realistic (neighbors also delayed); false = idealized
-% ===================================================================
 
 if N ~= 12
     error('This demo is configured for N=12. Current N=%d.', N);
@@ -45,13 +36,7 @@ end
 
 n = single.n;
 m = single.nu;
-steps = 500;
-
-if coop_use_delay
-    fprintf('coop_use_delay = 1 (realistic delayed states)\n');
-else
-    fprintf('coop_use_delay = 0 (idealized current states)\n');
-end
+steps = 1400;  % 70s at Ts=0.05
 
 % Cooperative/safety parameters (defaults)
 kc_pos = 0.10;
@@ -108,12 +93,25 @@ for i = 1:N
     x_ref(ix) = [pos_ref_all(:, i); 0; 0];
 end
 
-% Initial positions: around a large circle (away from references)
+% Initial conditions: each group starts as a compact cluster, at moderate
+% distance from its target (~1.5-2.5m). Groups are well-separated.
+%
+% Group 1 target=(-1.5,0), starts from (-2.5,+2.5)
+% Group 2 target=( 0.0,0), starts from ( 0.0,+4.0)
+% Group 3 target=(+1.5,0), starts from (+2.5,-2.5)
 x = zeros(n*N, steps+1);
+g1_start = [-2.5, +2.5];
+g2_start = [ 0.0, +4.0];
+g3_start = [+2.5, -2.5];
+g_starts = [g1_start; g2_start; g3_start];
+
 for i = 1:N
-    ang = 2*pi*i/N;
+    g = floor((i-1)/group_size) + 1;
+    r = mod(i-1, group_size) + 1;
+    % Same square layout as targets (±0.25 m spread within group)
+    sp = offsets(r, :);
     ix = (i-1)*n + (1:n);
-    x(ix, 1) = [2.0*cos(ang); 1.2*sin(ang); 0; 0];
+    x(ix, 1) = [g_starts(g,1)+sp(1); g_starts(g,2)+sp(2); 0; 0];
 end
 
 u_prev = zeros(m*N, 1);
@@ -179,16 +177,10 @@ for k = 1:steps
         u_local = K * (x_del - x_ref_i);
 
         % cooperative term
-        if coop_use_delay
-            % realistic: self uses current state (local sensor, no delay),
-            %            neighbors use delayed states (via network)
-            p_i = x(ix(1:2), k);
-            v_i = x(ix(3:4), k);
-        else
-            % idealized: both self and neighbors use current states
-            p_i = x(ix(1:2), k);
-            v_i = x(ix(3:4), k);
-        end
+        % realistic: self uses current state (local sensor, no delay),
+        %            neighbors use delayed states (via network)
+        p_i = x(ix(1:2), k);
+        v_i = x(ix(3:4), k);
         p_ref_i = x_ref_i(1:2);
         u_coop = zeros(2,1);
 
@@ -196,21 +188,15 @@ for k = 1:steps
         for jj = 1:numel(nei)
             j = nei(jj);
             jx = (j-1)*n + (1:n);
-            if coop_use_delay
-                % realistic: neighbor info comes from network (delayed + packet loss)
-                idx_nb_delay = k - d;
-                if idx_nb_delay < 1
-                    x_nb_del = x_hist(jx, 1);
-                else
-                    x_nb_del = x_hist(jx, idx_nb_delay);
-                end
-                p_j = x_nb_del(1:2);
-                v_j = x_nb_del(3:4);
+            % realistic: neighbor info comes from network (delayed)
+            idx_nb_delay = k - d;
+            if idx_nb_delay < 1
+                x_nb_del = x_hist(jx, 1);
             else
-                % idealized: neighbor current state
-                p_j = x(jx(1:2), k);
-                v_j = x(jx(3:4), k);
+                x_nb_del = x_hist(jx, idx_nb_delay);
             end
+            p_j = x_nb_del(1:2);
+            v_j = x_nb_del(3:4);
             p_ref_j = x_ref(jx(1:2));
 
             e_rel_p = (p_i - p_j) - (p_ref_i - p_ref_j);
@@ -280,43 +266,50 @@ end
 t = (0:steps) * Ts;
 mean_err = mean(pos_err_norm, 1);
 
-if coop_use_delay
-    delay_tag = '_delayed';
-else
-    delay_tag = '_ideal';
-end
-
 figure('Name', 'Step9 - all AGV position error norms');
-plot(t, pos_err_norm', 'LineWidth', 1.0);
+h_err = gca;
+clrs = lines(N);
+for i = 1:N
+    g = floor((i-1)/group_size) + 1;
+    plot(t, pos_err_norm(i,:), 'LineWidth', 1.0, 'Color', clrs(i,:));
+    hold on;
+end
 grid on; xlabel('t (s)'); ylabel('||e_{pos,i}||');
-title(sprintf('Step9 cooperative 12-AGV, p=%.2f, d=%d, coop%s', p, d, delay_tag));
-exportgraphics(gcf, fullfile(pic_dir, sprintf('step9_all_pos_err_p%.2f_d%d%s.png', p, d, delay_tag)), 'Resolution', 220);
+title(sprintf('Step9 cooperative 12-AGV, p=%.2f, d=%d', p, d));
+% Build per-AGV legend
+lgd_str = arrayfun(@(i) sprintf('AGV%d', i), 1:N, 'UniformOutput', false);
+legend(lgd_str, 'Location', 'eastoutside', 'FontSize', 6);
+exportgraphics(gcf, fullfile(pic_dir, sprintf('step9_all_pos_err_p%.2f_d%d.png', p, d)), 'Resolution', 220);
 
 figure('Name', 'Step9 - mean position error');
 plot(t, mean_err, 'LineWidth', 1.8);
 grid on; xlabel('t (s)'); ylabel('mean ||e_{pos}||');
-title(sprintf('Step9 mean position error, coop%s', delay_tag));
-exportgraphics(gcf, fullfile(pic_dir, sprintf('step9_mean_pos_err_p%.2f_d%d%s.png', p, d, delay_tag)), 'Resolution', 220);
+title(sprintf('Step9 mean position error, p=%.2f, d=%d', p, d));
+exportgraphics(gcf, fullfile(pic_dir, sprintf('step9_mean_pos_err_p%.2f_d%d.png', p, d)), 'Resolution', 220);
 
 figure('Name', 'Step9 - group center error');
-plot(t, group_center_err', 'LineWidth', 1.3);
-grid on; xlabel('t (s)'); ylabel('group center error norm');
+hold on; grid on;
+plot(t, group_center_err(1,:), 'LineWidth', 1.5, 'Color', '#e41a1c', 'LineStyle', '-');
+plot(t, group_center_err(2,:), 'LineWidth', 1.5, 'Color', '#377eb8', 'LineStyle', '--');
+plot(t, group_center_err(3,:), 'LineWidth', 1.5, 'Color', '#4daf4a', 'LineStyle', ':');
+xlabel('t (s)'); ylabel('group center error norm');
 legend('Group1','Group2','Group3', 'Location', 'northeast');
-title(sprintf('Step9 group-center tracking errors, coop%s', delay_tag));
-exportgraphics(gcf, fullfile(pic_dir, sprintf('step9_group_center_err_p%.2f_d%d%s.png', p, d, delay_tag)), 'Resolution', 220);
+title('Step9 group-center tracking errors');
+exportgraphics(gcf, fullfile(pic_dir, sprintf('step9_group_center_err_p%.2f_d%d.png', p, d)), 'Resolution', 220);
 
 figure('Name', 'Step9 - minimum pairwise distance');
 plot(t, min_pair_dist, 'LineWidth', 1.6);
 grid on; xlabel('t (s)'); ylabel('minimum pairwise distance');
-title(sprintf('Step9 minimum pairwise AGV distance, coop%s', delay_tag));
-exportgraphics(gcf, fullfile(pic_dir, sprintf('step9_min_pair_dist_p%.2f_d%d%s.png', p, d, delay_tag)), 'Resolution', 220);
+yline(0.20, '--r', '0.20m threshold');
+title(sprintf('Step9 minimum pairwise AGV distance, p=%.2f, d=%d', p, d));
+exportgraphics(gcf, fullfile(pic_dir, sprintf('step9_min_pair_dist_p%.2f_d%d.png', p, d)), 'Resolution', 220);
 
 tag = sprintf('kp%.2f_kv%.2f_ds%.2f_kr%.2f_um%.1f', kc_pos, kc_vel, d_safe, k_rep, u_max);
 tag = strrep(tag, '.', 'p');
-out_file = fullfile(project_root, ['step9_multi12_coop_demo_', tag, delay_tag, '.mat']);
+out_file = fullfile(project_root, ['step9_multi12_coop_demo_', tag, '.mat']);
 save(out_file, 'x', 'x_ref', 'u_act_log', 'u_cmd_log', 'pos_err_norm', 'mean_err', ...
     'group_center_err', 'min_pair_dist', 'Ts', 'p', 'd', 'N', 'kc_pos', 'kc_vel', ...
-    'group_centers', 'offsets', 'd_safe', 'k_rep', 'u_max', 'coop_use_delay');
+    'group_centers', 'offsets', 'd_safe', 'k_rep', 'u_max');
 % Keep a stable latest file name for downstream scripts.
 copyfile(out_file, fullfile(project_root, 'step9_multi12_coop_demo.mat'));
 
